@@ -1,0 +1,13 @@
+{
+  "name": "claude-pr-watch",
+  "owner": {
+    "name": "Rob Hannay"
+  },
+  "plugins": [
+    {
+      "name": "pr-watch",
+      "source": "./plugins/pr-watch",
+      "description": "Live PR watching inside Claude Code sessions: comments, new PRs, CI changes, merges — auto-armed every session via a SessionStart hook."
+    }
+  ]
+}

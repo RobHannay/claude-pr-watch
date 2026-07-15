@@ -1,0 +1,11 @@
+{
+  "name": "pr-watch",
+  "description": "Watch your open GitHub PRs from inside Claude Code: new comments, new PRs, CI transitions, and merges land as live events in your session, and Claude triages them for you.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Rob Hannay"
+  },
+  "repository": "https://github.com/RobHannay/claude-pr-watch",
+  "license": "MIT",
+  "keywords": ["github", "pull-requests", "monitor", "notifications"]
+}
