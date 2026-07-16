@@ -45,6 +45,7 @@ Environment variables read by `scripts/watch-pr-activity.sh`:
 | `WATCH_INTERVAL` | `60` | Poll interval in seconds |
 | `WATCH_STATE_DIR` | temp dir | Persistent state dir (pre-seeded state diffs on the first cycle) |
 | `WATCH_MAX_CYCLES` | `0` (forever) | Stop after N cycles — useful for testing |
+| `WATCH_START` | monitor start time | ISO timestamp; PRs created before it never announce as NEW (guards against GitHub search-index flakes resurfacing old PRs) |
 
 ## Limitations
 

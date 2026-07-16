@@ -3,12 +3,13 @@
 # (consumed by a Claude Code Monitor):
 #   COMMENT  — any new issue/inline comment (unfiltered; the consuming
 #              Claude session decides what deserves a response)
-#   NEW PR   — a PR authored by Rob appeared
+#   NEW PR   — a PR you authored appeared (created after the monitor started)
 #   CI       — a PR's check rollup changed (passing/failing/pending/no-checks)
 #   MERGED / CLOSED — a PR left the open set (verified via gh pr view)
 #
 # Env overrides (for testing): WATCH_INTERVAL, WATCH_MAX_CYCLES (0 = forever),
-# WATCH_STATE_DIR (pre-seeded state diffs on the first cycle).
+# WATCH_STATE_DIR (pre-seeded state diffs on the first cycle), WATCH_START
+# (ISO timestamp; PRs created before it never announce as NEW).
 set -u
 
 INTERVAL="${WATCH_INTERVAL:-60}"
@@ -36,6 +37,7 @@ COMMENT_FILTER='
   | "COMMENT \($repo)#\($n) — \(.user.login)\(if .path then " on \(.path)" else "" end): \(.body | gsub("[\\r\\n\\t]+"; " ") | .[0:160])"
 '
 
+# TSV columns: key, ci-status, title, createdAt
 ROLLUP_FILTER='
   .[]
   | ([.statusCheckRollup[]? | (.conclusion // .state // .status // "PENDING") | ascii_upcase]) as $s
@@ -43,11 +45,14 @@ ROLLUP_FILTER='
      elif ($s | any(. == "FAILURE" or . == "ERROR" or . == "TIMED_OUT" or . == "CANCELLED" or . == "STARTUP_FAILURE")) then "failing"
      elif ($s | any(. == "PENDING" or . == "IN_PROGRESS" or . == "QUEUED" or . == "EXPECTED" or . == "WAITING" or . == "ACTION_REQUIRED" or . == "REQUESTED")) then "pending"
      else "passing" end) as $ci
-  | "\($repo)#\(.number)\t\($ci)\t\(.title | gsub("[\\r\\n\\t]+"; " "))"
+  | "\($repo)#\(.number)\t\($ci)\t\(.title | gsub("[\\r\\n\\t]+"; " "))\t\(.createdAt)"
 '
 
 cycle=0
 last=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# NEW PR events require createdAt >= START: a PR that "appears" but predates the
+# monitor is a GitHub search-index flake resurfacing an old PR, not a new one.
+START="${WATCH_START:-$last}"
 
 while true; do
   [ "$cycle" -gt 0 ] && sleep "$INTERVAL"
@@ -66,7 +71,7 @@ while true; do
   ok=1
   for repo in $repos; do
     gh pr list --repo "$repo" --author "@me" --state open --limit 100 \
-      --json number,title,statusCheckRollup 2>/dev/null </dev/null \
+      --json number,title,statusCheckRollup,createdAt 2>/dev/null </dev/null \
       | jq -r --arg repo "$repo" "$ROLLUP_FILTER" >> "$CUR" || ok=0
   done
   if [ "$ok" = 0 ]; then
@@ -79,9 +84,10 @@ while true; do
     cut -f1 "$PREV" > "$STATE_DIR/prev.keys"
     cut -f1 "$CUR"  > "$STATE_DIR/cur.keys"
 
-    # New PRs
+    # New PRs (createdAt >= START filters out search-index flakes resurfacing old PRs)
     comm -13 "$STATE_DIR/prev.keys" "$STATE_DIR/cur.keys" | while IFS= read -r key; do
-      awk -F'\t' -v k="$key" '$1 == k {printf "NEW PR: %s — %s (CI: %s)\n", $1, $3, $2}' "$CUR"
+      awk -F'\t' -v k="$key" -v start="$START" \
+        '$1 == k && $4 >= start {printf "NEW PR: %s — %s (CI: %s)\n", $1, $3, $2}' "$CUR"
     done
 
     # Gone PRs — verify state so a transient API miss can't fake a merge
@@ -100,9 +106,9 @@ while true; do
     done
     sort -o "$CUR" "$CUR"
 
-    # CI transitions (join fields: key, prev-ci, prev-title, cur-ci, cur-title)
+    # CI transitions (join fields: key, prev-ci, prev-title, prev-created, cur-ci, cur-title, cur-created)
     join -t "$TAB" -j 1 "$PREV" "$CUR" 2>/dev/null \
-      | awk -F'\t' '$2 != $4 {printf "CI: %s — now %s (was %s) — %s\n", $1, $4, $2, $5}'
+      | awk -F'\t' '$2 != $5 {printf "CI: %s — now %s (was %s) — %s\n", $1, $5, $2, $6}'
 
     # New comments
     for repo in $repos; do
