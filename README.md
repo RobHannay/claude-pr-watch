@@ -7,7 +7,7 @@ Live GitHub PR watching **inside your Claude Code session**. Each session regist
 - 🎉 **Merges and closes** — detected from PR state, then the PR drops off the watchlist automatically
 - 👀 **WATCHING confirmations** — one event when a PR joins the list
 
-A `SessionStart` hook arms the watcher automatically in every session and tells Claude to register PRs liberally as they come up — there's nothing to remember.
+A `SessionStart` hook arms the watcher automatically in every session and tells Claude to register PRs liberally as they come up. It also checks whether your current branch has an open PR (`gh pr list --head`) and seeds the watchlist with it — so the PR you're working on is watched from the first minute, zero-touch.
 
 ## Why session-scoped?
 
