@@ -1,5 +1,5 @@
 #!/bin/bash
-# SessionStart hook: tell Claude to arm the standing PR-activity watcher.
+# SessionStart hook: tell Claude to arm the session-scoped PR watcher.
 # Resolves its own location so the injected instruction carries an absolute path.
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 WATCH="$SCRIPT_DIR/watch-pr-activity.sh"
@@ -12,5 +12,5 @@ EOF
 fi
 
 cat <<EOF
-{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"The pr-watch plugin is installed: arm the user's GitHub PR watcher in this session. Unless a Monitor task running watch-pr-activity.sh is already active in this session, call the Monitor tool now with {command: \"bash $WATCH\", description: \"PR activity: comments, new PRs, CI changes, merges\", persistent: true}. Arm it alongside your first response without making a fuss. When events arrive later, triage agentically: surface and act on what matters (human review comments deserve a drafted reply, comments addressed to claude/Claude deserve an answer, red CI and merges are always worth surfacing); stay quiet on noise (deploy-preview bot posts, bots re-announcing resolved findings, repeated green<->pending CI flips while the user is actively pushing)."}}
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"The pr-watch plugin is installed: arm the session-scoped PR watcher. Unless a Monitor running watch-pr-activity.sh is already active in this session: create an empty watchlist file in your scratchpad directory (e.g. <scratchpad>/pr-watchlist.txt), then call the Monitor tool with {command: \"WATCH_LIST=<absolute watchlist path> bash $WATCH\", description: \"PR activity on session-registered PRs\", persistent: true}. Arm it alongside your first response without making a fuss. REGISTRATION (trigger-happy by design): whenever a specific PR comes up in this session — you open one, the user links or mentions one, you review/check/discuss one, or the current branch has one — append a line ('owner/repo#123' or the PR URL) to the watchlist via Bash. The watcher re-reads the file each cycle, dedupes, and drops merged/closed PRs automatically. TRIAGE arriving events agentically: human review comments deserve a drafted reply, comments addressed to claude deserve an answer, red CI and merges are always worth surfacing; stay quiet on deploy-preview bots, re-announced resolved findings, and green<->pending CI flips while the user is actively pushing."}}
 EOF

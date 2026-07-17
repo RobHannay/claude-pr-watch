@@ -1,17 +1,21 @@
 # claude-pr-watch
 
-Live GitHub PR watching **inside your Claude Code session**. A background monitor polls your open PRs and pushes events into the running session — Claude wakes on each one, with your full working context, and triages:
+Live GitHub PR watching **inside your Claude Code session**. Each session registers the PRs it actually touches — ones you open, link, review, or discuss — and a background monitor pushes their events into the running session. Claude wakes on each one, with your full working context, and triages:
 
-- 💬 **Comments** — every new issue/inline comment on your open PRs. Claude drafts replies to human review comments, answers anything addressed to it, and quietly ignores bot noise.
-- 🆕 **New PRs** — each pull request you open shows up as an event
-- 🚦 **CI transitions** — passing / failing / pending per PR (red is always surfaced; green↔pending flapping while you push is self-throttled)
-- 🎉 **Merges and closes** — verified against the GitHub API so a flaky response can't fake a merge
+- 💬 **Comments** — every new issue/inline comment on watched PRs. Claude drafts replies to human review comments, answers anything addressed to it, and quietly ignores bot noise.
+- 🚦 **CI transitions** — passing / failing / pending (red is always surfaced; green↔pending flapping while you push is self-throttled)
+- 🎉 **Merges and closes** — detected from PR state, then the PR drops off the watchlist automatically
+- 👀 **WATCHING confirmations** — one event when a PR joins the list
 
-A `SessionStart` hook arms the watcher automatically in every session, so there's nothing to remember.
+A `SessionStart` hook arms the watcher automatically in every session and tells Claude to register PRs liberally as they come up — there's nothing to remember.
+
+## Why session-scoped?
+
+Watching *all* your open PRs sounds nice and is mostly noise: with dozens of PRs across repos you drown in bot chatter and CI flaps from work you're not thinking about. Scoping to the PRs this session has interacted with keeps events relevant to what you and Claude are actually doing. It also avoids GitHub's flaky search index entirely — the watcher only ever does direct PR lookups.
 
 ## Why this instead of the GitHub App / webhooks?
 
-Nothing event-driven can reach a local process, and the GitHub App responds on GitHub with fresh context. This plugin is the "push into the session that has my context" equivalent: polling under the hood (60s, a handful of API calls per minute), push from the session's perspective.
+Nothing event-driven can reach a local process, and the GitHub App responds on GitHub with fresh context. This plugin is the "push into the session that has my context" equivalent: polling under the hood (60s, a few API calls per cycle), push from the session's perspective.
 
 ## Requirements
 
@@ -28,13 +32,12 @@ In Claude Code:
 /plugin install pr-watch@claude-pr-watch
 ```
 
-That's it — your next session (or `/pr-watch` right away) arms the watcher.
-
 ## Usage
 
-- It just runs: events appear in your session as they happen, and Claude tells you about the ones that matter.
+- It just runs: mention a PR, open a PR, review a PR — Claude registers it, and its events appear in your session as they happen.
+- Ask Claude to "watch this PR" / "watch MetaviewAI/web-app#1234" to register one explicitly.
 - `/pr-watch` — arm manually (e.g. after stopping it, or if you disable the auto-arm hook).
-- Watches **all open PRs authored by you** across every repo your `gh` auth can see.
+- The watchlist is a plain text file (one `owner/repo#num` or PR URL per line), re-read every cycle — you can edit it yourself.
 
 ## Tuning
 
@@ -42,10 +45,10 @@ Environment variables read by `scripts/watch-pr-activity.sh`:
 
 | Var | Default | Purpose |
 | --- | --- | --- |
+| `WATCH_LIST` | — (required) | Path to the watchlist file |
 | `WATCH_INTERVAL` | `60` | Poll interval in seconds |
 | `WATCH_STATE_DIR` | temp dir | Persistent state dir (pre-seeded state diffs on the first cycle) |
 | `WATCH_MAX_CYCLES` | `0` (forever) | Stop after N cycles — useful for testing |
-| `WATCH_START` | monitor start time | ISO timestamp; PRs created before it never announce as NEW (guards against GitHub search-index flakes resurfacing old PRs) |
 
 ## Limitations
 

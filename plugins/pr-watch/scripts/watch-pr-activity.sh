@@ -1,17 +1,22 @@
 #!/bin/bash
-# Watch your open GitHub PRs and emit one line per event on stdout
-# (consumed by a Claude Code Monitor):
+# Watch a session-registered list of GitHub PRs and emit one line per event
+# on stdout (consumed by a Claude Code Monitor):
+#   WATCHING — a PR was added to the watchlist (confirmation, emitted once)
 #   COMMENT  — any new issue/inline comment (unfiltered; the consuming
 #              Claude session decides what deserves a response)
-#   NEW PR   — a PR you authored appeared (created after the monitor started)
 #   CI       — a PR's check rollup changed (passing/failing/pending/no-checks)
-#   MERGED / CLOSED — a PR left the open set (verified via gh pr view)
+#   MERGED / CLOSED — the PR's state changed (watching then stops)
+#
+# WATCH_LIST (required): path to the watchlist file. One PR per line, either
+#   owner/repo#123   or   https://github.com/owner/repo/pull/123
+# The file is re-read every cycle, so appending a line starts watching that PR
+# within one interval — no restart needed. Duplicates are fine.
 #
 # Env overrides (for testing): WATCH_INTERVAL, WATCH_MAX_CYCLES (0 = forever),
-# WATCH_STATE_DIR (pre-seeded state diffs on the first cycle), WATCH_START
-# (ISO timestamp; PRs created before it never announce as NEW).
+# WATCH_STATE_DIR (pre-seeded state diffs on the first cycle).
 set -u
 
+LIST="${WATCH_LIST:?set WATCH_LIST to the watchlist file path}"
 INTERVAL="${WATCH_INTERVAL:-60}"
 MAX_CYCLES="${WATCH_MAX_CYCLES:-0}"
 
@@ -25,8 +30,10 @@ else
 fi
 trap '[ "$CLEANUP" = 1 ] && rm -rf "$STATE_DIR"' EXIT
 
-PREV="$STATE_DIR/prev.tsv"   # lines: owner/repo#num <TAB> ci-status <TAB> title
+PREV="$STATE_DIR/prev.tsv"   # lines: owner/repo#num <TAB> state <TAB> ci <TAB> title
 CUR="$STATE_DIR/cur.tsv"
+DONE="$STATE_DIR/done.keys"  # merged/closed keys — skipped on every later cycle
+touch "$DONE"
 TAB=$(printf '\t')
 
 COMMENT_FILTER='
@@ -37,82 +44,60 @@ COMMENT_FILTER='
   | "COMMENT \($repo)#\($n) — \(.user.login)\(if .path then " on \(.path)" else "" end): \(.body | gsub("[\\r\\n\\t]+"; " ") | .[0:160])"
 '
 
-# TSV columns: key, ci-status, title, createdAt
-ROLLUP_FILTER='
-  .[]
-  | ([.statusCheckRollup[]? | (.conclusion // .state // .status // "PENDING") | ascii_upcase]) as $s
+PR_FILTER='
+  ([.statusCheckRollup[]? | (.conclusion // .state // .status // "PENDING") | ascii_upcase]) as $s
   | (if ($s | length) == 0 then "no-checks"
      elif ($s | any(. == "FAILURE" or . == "ERROR" or . == "TIMED_OUT" or . == "CANCELLED" or . == "STARTUP_FAILURE")) then "failing"
      elif ($s | any(. == "PENDING" or . == "IN_PROGRESS" or . == "QUEUED" or . == "EXPECTED" or . == "WAITING" or . == "ACTION_REQUIRED" or . == "REQUESTED")) then "pending"
      else "passing" end) as $ci
-  | "\($repo)#\(.number)\t\($ci)\t\(.title | gsub("[\\r\\n\\t]+"; " "))\t\(.createdAt)"
+  | "\($key)\t\(.state)\t\($ci)\t\(.title | gsub("[\\r\\n\\t]+"; " "))"
 '
 
 cycle=0
 last=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-# NEW PR events require createdAt >= START: a PR that "appears" but predates the
-# monitor is a GitHub search-index flake resurfacing an old PR, not a new one.
-START="${WATCH_START:-$last}"
 
 while true; do
   [ "$cycle" -gt 0 ] && sleep "$INTERVAL"
   cycle=$((cycle + 1))
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-  repos=$(gh search prs --author=@me --state=open --limit 100 --json repository \
-    --jq '[.[].repository.nameWithOwner] | unique | .[]' 2>/dev/null </dev/null)
-  if [ -z "$repos" ]; then
-    # Search hiccup or no open PRs: skip diffing so a flaky API can't fake merge events.
+  # Normalize the watchlist (URLs -> owner/repo#num), dedupe, drop finished PRs.
+  keys=""
+  if [ -f "$LIST" ]; then
+    keys=$(sed -E 's|https?://github\.com/([^/]+)/([^/]+)/pull/([0-9]+).*|\1/\2#\3|' "$LIST" \
+      | grep -E '^[^/ ]+/[^# ]+#[0-9]+$' | sort -u | grep -vxF -f "$DONE" || true)
+  fi
+  if [ -z "$keys" ]; then
     [ "$MAX_CYCLES" != 0 ] && [ "$cycle" -ge "$MAX_CYCLES" ] && exit 0
     continue
   fi
 
   : > "$CUR"
-  ok=1
-  for repo in $repos; do
-    gh pr list --repo "$repo" --author "@me" --state open --limit 100 \
-      --json number,title,statusCheckRollup,createdAt 2>/dev/null </dev/null \
-      | jq -r --arg repo "$repo" "$ROLLUP_FILTER" >> "$CUR" || ok=0
+  for key in $keys; do
+    repo=${key%#*}
+    num=${key##*#}
+    gh pr view "$num" --repo "$repo" --json state,title,statusCheckRollup 2>/dev/null </dev/null \
+      | jq -r --arg key "$key" "$PR_FILTER" >> "$CUR" \
+      || awk -F'\t' -v k="$key" '$1 == k' "$PREV" >> "$CUR"   # transient fetch failure: carry forward
   done
-  if [ "$ok" = 0 ]; then
-    [ "$MAX_CYCLES" != 0 ] && [ "$cycle" -ge "$MAX_CYCLES" ] && exit 0
-    continue
-  fi
   sort -o "$CUR" "$CUR"
 
   if [ -s "$PREV" ]; then
-    cut -f1 "$PREV" > "$STATE_DIR/prev.keys"
-    cut -f1 "$CUR"  > "$STATE_DIR/cur.keys"
+    JOINED="$STATE_DIR/joined.tsv"   # key, prev-state, prev-ci, prev-title, cur-state, cur-ci, cur-title
+    join -t "$TAB" -j 1 "$PREV" "$CUR" 2>/dev/null > "$JOINED"
 
-    # New PRs (createdAt >= START filters out search-index flakes resurfacing old PRs)
-    comm -13 "$STATE_DIR/prev.keys" "$STATE_DIR/cur.keys" | while IFS= read -r key; do
-      awk -F'\t' -v k="$key" -v start="$START" \
-        '$1 == k && $4 >= start {printf "NEW PR: %s — %s (CI: %s)\n", $1, $3, $2}' "$CUR"
-    done
+    # Newly watched PRs (in cur, not prev)
+    join -t "$TAB" -j 1 -v 2 "$PREV" "$CUR" 2>/dev/null \
+      | awk -F'\t' '{printf "WATCHING: %s — %s (%s, CI: %s)\n", $1, $4, tolower($2), $3}'
 
-    # Gone PRs — verify state so a transient API miss can't fake a merge
-    comm -23 "$STATE_DIR/prev.keys" "$STATE_DIR/cur.keys" | while IFS= read -r key; do
-      repo=${key%#*}
-      num=${key##*#}
-      info=$(gh pr view "$num" --repo "$repo" --json state,title \
-        --jq '"\(.state)\t\(.title)"' 2>/dev/null </dev/null) || continue
-      state=$(printf '%s' "$info" | cut -f1)
-      title=$(printf '%s' "$info" | cut -f2-)
-      case "$state" in
-        MERGED) echo "MERGED: $key — $title" ;;
-        CLOSED) echo "CLOSED without merge: $key — $title" ;;
-        *) awk -F'\t' -v k="$key" '$1 == k' "$PREV" >> "$CUR" ;;  # still open: carry forward
-      esac
-    done
-    sort -o "$CUR" "$CUR"
+    # State transitions and CI changes
+    awk -F'\t' '$2 == "OPEN" && $5 == "MERGED" {printf "MERGED: %s — %s\n", $1, $7}
+                $2 == "OPEN" && $5 == "CLOSED" {printf "CLOSED without merge: %s — %s\n", $1, $7}
+                $2 == "OPEN" && $5 == "OPEN" && $3 != $6 {printf "CI: %s — now %s (was %s) — %s\n", $1, $6, $3, $7}' "$JOINED"
 
-    # CI transitions (join fields: key, prev-ci, prev-title, prev-created, cur-ci, cur-title, cur-created)
-    join -t "$TAB" -j 1 "$PREV" "$CUR" 2>/dev/null \
-      | awk -F'\t' '$2 != $5 {printf "CI: %s — now %s (was %s) — %s\n", $1, $5, $2, $6}'
-
-    # New comments
-    for repo in $repos; do
-      nums=$(awk -F'\t' -v r="$repo" '{split($1, a, "#"); if (a[1] == r) print a[2]}' "$CUR" | paste -sd, -)
+    # New comments, per repo, only on still-open PRs
+    for repo in $(printf '%s\n' $keys | sed 's|#.*||' | sort -u); do
+      nums=$(awk -F'\t' -v r="$repo" '$2 == "OPEN" {split($1, a, "#"); if (a[1] == r) print a[2]}' "$CUR" | paste -sd, -)
       [ -z "$nums" ] && continue
       for kind in issues pulls; do
         gh api "repos/$repo/$kind/comments?since=$last&per_page=100" 2>/dev/null </dev/null \
@@ -121,6 +106,10 @@ while true; do
       done
     done
   fi
+
+  # Anything not OPEN is finished: skip it on all later cycles.
+  awk -F'\t' '$2 != "OPEN" {print $1}' "$CUR" >> "$DONE"
+  sort -u -o "$DONE" "$DONE"
 
   cp "$CUR" "$PREV"
   last=$now
