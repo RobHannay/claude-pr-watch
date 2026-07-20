@@ -2,8 +2,9 @@
 # Watch a session-registered list of GitHub PRs and emit one line per event
 # on stdout (consumed by a Claude Code Monitor):
 #   WATCHING — a PR was added to the watchlist (confirmation, emitted once)
-#   COMMENT  — any new issue/inline comment (unfiltered; the consuming
-#              Claude session decides what deserves a response)
+#   COMMENTS — new issue/inline comments, grouped per PR per cycle with a
+#              count (unfiltered snippets; the consuming Claude session
+#              should fetch the full comments before acting)
 #   CI       — a PR's check rollup changed (passing/failing/pending/no-checks)
 #   MERGED / CLOSED — the PR's state changed (watching then stops)
 #
@@ -36,12 +37,13 @@ DONE="$STATE_DIR/done.keys"  # merged/closed keys — skipped on every later cyc
 touch "$DONE"
 TAB=$(printf '\t')
 
+# Emits TSV: key <TAB> author[ on path] <TAB> snippet — aggregated per PR below.
 COMMENT_FILTER='
   .[]
   | ((.issue_url // .pull_request_url) | capture("/(?<n>[0-9]+)$").n) as $n
   | select(($numlist | split(",")) | index($n))
   | select(.created_at > $last)
-  | "COMMENT \($repo)#\($n) — \(.user.login)\(if .path then " on \(.path)" else "" end): \(.body | gsub("[\\r\\n\\t]+"; " ") | .[0:160])"
+  | "\($repo)#\($n)\t\(.user.login)\(if .path then " on \(.path)" else "" end)\t\(.body | gsub("[\\r\\n\\t]+"; " ") | .[0:120])"
 '
 
 PR_FILTER='
@@ -95,16 +97,24 @@ while true; do
                 $2 == "OPEN" && $5 == "CLOSED" {printf "CLOSED without merge: %s — %s\n", $1, $7}
                 $2 == "OPEN" && $5 == "OPEN" && $3 != $6 {printf "CI: %s — now %s (was %s) — %s\n", $1, $6, $3, $7}' "$JOINED"
 
-    # New comments, per repo, only on still-open PRs
+    # New comments, per repo, only on still-open PRs — collected first, then
+    # emitted as ONE event line per PR so a burst of review comments can't
+    # split across notifications.
+    COLLECTED="$STATE_DIR/comments.tsv"
+    : > "$COLLECTED"
     for repo in $(printf '%s\n' $keys | sed 's|#.*||' | sort -u); do
       nums=$(awk -F'\t' -v r="$repo" '$2 == "OPEN" {split($1, a, "#"); if (a[1] == r) print a[2]}' "$CUR" | paste -sd, -)
       [ -z "$nums" ] && continue
       for kind in issues pulls; do
         gh api "repos/$repo/$kind/comments?since=$last&per_page=100" 2>/dev/null </dev/null \
-          | jq -r --arg numlist "$nums" --arg repo "$repo" --arg last "$last" "$COMMENT_FILTER" \
+          | jq -r --arg numlist "$nums" --arg repo "$repo" --arg last "$last" "$COMMENT_FILTER" >> "$COLLECTED" \
           || true
       done
     done
+    awk -F'\t' '
+      { c[$1]++; if (t[$1] != "") t[$1] = t[$1] " ¦ "; t[$1] = t[$1] $2 ": " $3 }
+      END { for (k in c) printf "COMMENTS %s — %d new: %s\n", k, c[k], substr(t[k], 1, 500) }
+    ' "$COLLECTED"
   fi
 
   # Anything not OPEN is finished: skip it on all later cycles.

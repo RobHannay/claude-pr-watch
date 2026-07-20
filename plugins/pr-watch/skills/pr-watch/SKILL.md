@@ -31,7 +31,7 @@ The watcher re-reads the file every cycle: registration takes effect within one 
 
 Triage agentically — surface and act on what matters, stay quiet on noise:
 
-- **Always surface**: red CI, merges/closes, human review comments (draft a reply where sensible), any comment addressed to Claude.
+- **Always surface**: red CI, merges/closes, human review comments (draft a reply where sensible), any comment addressed to Claude. Before acting on a COMMENTS event, fetch ALL recent comments on that PR — event snippets are truncated and more may be in flight.
 - **Stay quiet on**: deploy-preview bot posts, bots re-announcing resolved findings, repeated green↔pending CI flips while the user is actively pushing (mention once, then only report terminal changes).
 
 ## Tuning

@@ -2,7 +2,7 @@
 
 Live GitHub PR watching **inside your Claude Code session**. Each session registers the PRs it actually touches — ones you open, link, review, or discuss — and a background monitor pushes their events into the running session. Claude wakes on each one, with your full working context, and triages:
 
-- 💬 **Comments** — every new issue/inline comment on watched PRs. Claude drafts replies to human review comments, answers anything addressed to it, and quietly ignores bot noise.
+- 💬 **Comments** — new issue/inline comments, grouped into one event per PR per cycle with a count (a five-comment review arrives as one event saying five). Claude drafts replies to human review comments, answers anything addressed to it, and quietly ignores bot noise.
 - 🚦 **CI transitions** — passing / failing / pending (red is always surfaced; green↔pending flapping while you push is self-throttled)
 - 🎉 **Merges and closes** — detected from PR state, then the PR drops off the watchlist automatically
 - 👀 **WATCHING confirmations** — one event when a PR joins the list
